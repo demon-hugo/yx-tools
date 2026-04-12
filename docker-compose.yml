@@ -18,6 +18,34 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PYTHONUNBUFFERED=1
+      # 测速模式: beginner | normal | proxy
+      # - MODE=normal
+      # 测速地区（多地区用空格分隔，仅 normal 模式有效）
+      # - REGIONS=HKG SIN NRT
+      # 自定义测速地址
+      # - SPEEDTEST_URL=https://speed.cloudflare.com/__down?bytes=99999999
+      # 测试IP数量
+      # - COUNT=20
+      # 下载速度下限(MB/s)
+      # - SPEED=10
+      # 延迟上限(ms)
+      # - DELAY=1000
+      # 延迟测速线程数
+      # - THREAD=200
+      # 多地区最大并发数
+      # - MAX_WORKERS=3
+      # 上传方式: api | github | none
+      # - UPLOAD=github
+      # GitHub 仓库
+      # - REPO=demon-hugo/yx-tools
+      # GitHub Token
+      # - TOKEN=ghp_xxx
+      # 上传文件路径（可用 {region} 占位符按地区分别上传）
+      # - FILE_PATH={region}_ips.txt
+      # 上传IP数量
+      # - UPLOAD_COUNT=10
+      # 上传前清空现有IP
+      # - CLEAR=true
       # 定时任务配置（可选）
       # - CRON_SCHEDULE=0 2 * * *  # 每天凌晨2点
       # - CRON_COMMAND=python3 /app/cloudflare_speedtest.py --mode beginner --count 10 --speed 1 --delay 1000
@@ -28,4 +56,3 @@ services:
     restart: unless-stopped
     # 工作目录
     working_dir: /app
-

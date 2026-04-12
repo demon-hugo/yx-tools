@@ -1234,6 +1234,10 @@ def handle_beginner_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
     print(f"   - 延迟测速线程数: {thread_count}")
     print("=" * 50)
     
+    # 可选：自定义测速地址
+    custom_url = input(f"\n是否自定义测速地址？[默认: {DEFAULT_SPEEDTEST_URL}，直接回车跳过]\n请输入: ").strip()
+    speedtest_url = custom_url if custom_url else DEFAULT_SPEEDTEST_URL
+    
     print(f"\n🎯 开始测速...")
     print(f"参数: 测试{dn_count}个IP, 速度下限{speed_limit}MB/s, 延迟上限{time_limit}ms")
     print("模式: 小白快速测试（全自动，无需选择地区）")
@@ -1257,7 +1261,7 @@ def handle_beginner_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
         "-dn", dn_count,
         "-sl", speed_limit,
         "-tl", time_limit,
-        "-url", DEFAULT_SPEEDTEST_URL,
+        "-url", speedtest_url,
         "-o", "result.csv"
     ])
     
@@ -1279,7 +1283,7 @@ def handle_beginner_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
         print("\n" + "=" * 80)
         print(" 💡 快速复用命令")
         print("=" * 80)
-        cli_cmd = generate_cli_command("beginner", ip_version, None, dn_count, speed_limit, time_limit, upload_info, thread_count)
+        cli_cmd = generate_cli_command("beginner", ip_version, None, dn_count, speed_limit, time_limit, upload_info, thread_count, speedtest_url)
         # 保存命令供定时任务使用
         global LAST_GENERATED_COMMAND
         LAST_GENERATED_COMMAND = cli_cmd
@@ -1305,8 +1309,12 @@ def handle_normal_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
     print("\n开始检测可用地区...")
     print("正在使用HTTPing模式检测各地区可用性...")
     
+    # 可选：自定义测速地址
+    custom_url = input(f"\n是否自定义测速地址？[默认: {DEFAULT_SPEEDTEST_URL}，直接回车跳过]\n请输入: ").strip()
+    speedtest_url = custom_url if custom_url else DEFAULT_SPEEDTEST_URL
+    
     # 先运行一次HTTPing检测，获取可用地区
-    available_regions = detect_available_regions()
+    available_regions = detect_available_regions(speedtest_url)
     
     if not available_regions:
         print("❌ 未检测到可用地区，请检查网络连接")
@@ -1316,21 +1324,28 @@ def handle_normal_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
     for i, (region_code, region_name, count) in enumerate(available_regions, 1):
         print(f"  {i}. {region_code} - {region_name} (可用{count}个IP)")
     
-    # 让用户选择地区
+    # 让用户选择地区（支持多选）
     while True:
-        try:
-            choice = int(input(f"\n请选择地区 [1-{len(available_regions)}]: ").strip())
-            if 1 <= choice <= len(available_regions):
-                selected_region = available_regions[choice - 1]
-                cfcolo = selected_region[0]
-                region_name = selected_region[1]
-                count = selected_region[2]
-                print(f"✓ 已选择: {region_name} ({cfcolo}) - 可用{count}个IP")
+        choice = input(f"\n请选择地区 [1-{len(available_regions)}，多个用逗号分隔]: ").strip()
+        choices = [c.strip() for c in choice.split(',') if c.strip()]
+        selected_regions = []
+        valid = True
+        for c in choices:
+            try:
+                idx = int(c)
+                if 1 <= idx <= len(available_regions):
+                    selected_regions.append(available_regions[idx - 1])
+                else:
+                    valid = False
+                    break
+            except ValueError:
+                valid = False
                 break
-            else:
-                print(f"✗ 请输入 1-{len(available_regions)} 之间的数字")
-        except ValueError:
-            print("✗ 请输入有效的数字")
+        if valid and selected_regions:
+            for sel in selected_regions:
+                print(f"✓ 已选择: {sel[1]} ({sel[0]}) - 可用{sel[2]}个IP")
+            break
+        print(f"✗ 请输入 1-{len(available_regions)} 之间的有效数字，多个用逗号分隔")
     
     # 显示预设配置选项
     display_preset_configs()
@@ -1441,75 +1456,76 @@ def handle_normal_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
         except ValueError:
             print("✗ 请输入有效的数字")
     
-    print(f"\n测速参数: 地区={cfcolo}, 测试{dn_count}个IP, 速度下限{speed_limit}MB/s, 延迟上限{time_limit}ms, 线程数={thread_count}")
-    print("模式: 常规测速（指定地区）")
+    region_codes = [r[0] for r in selected_regions]
+    print(f"\n测速参数: 地区={', '.join(region_codes)}, 测试{dn_count}个IP, 速度下限{speed_limit}MB/s, 延迟上限{time_limit}ms, 线程数={thread_count}")
+    print("模式: 常规测速（指定地区，多地区将同时测速）")
     
-    # 从地区扫描结果中提取该地区的IP进行测速
+    # 从地区扫描结果中提取各地区的IP进行测速
     if os.path.exists("region_scan.csv"):
-        print(f"\n正在从扫描结果中提取 {cfcolo} 地区的IP...")
+        region_tasks = []
+        for selected_region in selected_regions:
+            cfcolo = selected_region[0]
+            print(f"\n正在从扫描结果中提取 {cfcolo} 地区的IP...")
+            region_ips = []
+            with open("region_scan.csv", 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    colo = (row.get('地区码') or '').strip()
+                    if colo == cfcolo:
+                        ip = (row.get('IP 地址') or '').strip()
+                        if ip:
+                            region_ips.append(ip)
+            if region_ips:
+                region_tasks.append((cfcolo, region_ips))
+                print(f"找到 {len(region_ips)} 个 {cfcolo} 地区的IP")
+            else:
+                print(f"❌ 未找到 {cfcolo} 地区的IP")
         
-        # 读取该地区的IP
-        region_ips = []
-        with open("region_scan.csv", 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                colo = (row.get('地区码') or '').strip()
-                if colo == cfcolo:
-                    ip = (row.get('IP 地址') or '').strip()
-                    if ip:
-                        region_ips.append(ip)
-        
-        if region_ips:
-            # 创建该地区的IP文件
-            region_ip_file = f"{cfcolo.lower()}_ips.txt"
-            with open(region_ip_file, 'w', encoding='utf-8') as f:
-                for ip in region_ips:
-                    f.write(f"{ip}\n")
-            
-            print(f"找到 {len(region_ips)} 个 {cfcolo} 地区的IP，开始测速...")
-            
+        if region_tasks:
             # 使用该地区的IP文件进行测速
             os_type, arch_type = get_system_info()
             exec_name = download_cloudflare_speedtest(os_type, arch_type)
             
-            # 构建测速命令
-            if sys.platform == "win32":
-                cmd = [exec_name]
-            else:
-                cmd = [f"./{exec_name}"]
+            # 构建模拟 args 对象
+            class SimArgs:
+                pass
+            sim_args = SimArgs()
+            sim_args.thread = thread_count
+            sim_args.count = dn_count
+            sim_args.speed = speed_limit
+            sim_args.delay = time_limit
+            sim_args.speedtest_url = speedtest_url
+            sim_args.max_workers = min(3, len(region_tasks))
             
-            cmd.extend([
-                "-f", region_ip_file,
-                "-n", thread_count,
-                "-dn", dn_count,
-                "-sl", speed_limit,
-                "-tl", time_limit,
-                "-url", DEFAULT_SPEEDTEST_URL,
-                "-o", "result.csv"
-            ])
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            results = {}
+            with ThreadPoolExecutor(max_workers=sim_args.max_workers) as executor:
+                futures = {
+                    executor.submit(run_speedtest_for_region, region, ips, sim_args, exec_name): region
+                    for region, ips in region_tasks
+                }
+                for future in as_completed(futures):
+                    region = futures[future]
+                    try:
+                        result_csv = future.result()
+                        if result_csv:
+                            results[region] = result_csv
+                    except Exception as e:
+                        print(f"[{region}] 测速过程中出错: {e}")
             
-            print(f"\n运行命令: {' '.join(cmd)}")
-            print("=" * 50)
-            
-            # 运行测速
-            result = subprocess.run(cmd, encoding='utf-8', errors='replace')
-            
-            # 清理临时文件
-            if os.path.exists(region_ip_file):
-                os.remove(region_ip_file)
-            
-            if result.returncode == 0:
-                print("\n✅ 测速完成！结果已保存到 result.csv")
+            if results:
+                print(f"\n✅ 共完成 {len(results)}/{len(region_tasks)} 个地区的测速")
                 
-                # 询问是否上报结果
-                upload_info = upload_results_to_api("result.csv")
+                # 逐个地区询问是否上报（简化处理）
+                for region, result_csv in results.items():
+                    if os.path.exists(result_csv):
+                        upload_results_to_api(result_csv)
                 
                 # 输出对应的命令行命令
                 print("\n" + "=" * 80)
                 print(" 💡 快速复用命令")
                 print("=" * 80)
-                cli_cmd = generate_cli_command("normal", ip_version, cfcolo, dn_count, speed_limit, time_limit, upload_info, thread_count)
-                # 保存命令供定时任务使用
+                cli_cmd = generate_cli_command("normal", ip_version, region_codes, dn_count, speed_limit, time_limit, None, thread_count, speedtest_url, sim_args.max_workers)
                 global LAST_GENERATED_COMMAND
                 LAST_GENERATED_COMMAND = cli_cmd
                 print("本次交互对应的命令行命令：")
@@ -1519,13 +1535,13 @@ def handle_normal_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
                 print("💡 提示：您可以复制上面的命令，下次直接使用命令行模式运行")
                 print("=" * 80)
             else:
-                print("\n❌ 测速失败")
+                print("\n❌ 所有地区测速均失败")
         else:
-            print(f"❌ 未找到 {cfcolo} 地区的IP")
+            print("❌ 没有可用的地区IP进行测速")
     else:
         print("❌ 未找到地区扫描结果文件")
     
-    return cfcolo, dn_count, speed_limit, time_limit
+    return (region_codes[0] if region_codes else None), dn_count, speed_limit, time_limit
 
 
 def generate_proxy_list(result_file="result.csv", output_file="ips_ports.txt"):
@@ -1612,8 +1628,10 @@ def generate_proxy_list(result_file="result.csv", output_file="ips_ports.txt"):
         return False
 
 
-def run_speedtest_with_file(ip_file, dn_count, speed_limit, time_limit, thread_count="200"):
+def run_speedtest_with_file(ip_file, dn_count, speed_limit, time_limit, thread_count="200", speedtest_url=None):
     """使用指定IP文件运行测速（反代模式，不需要机场码）"""
+    if speedtest_url is None:
+        speedtest_url = DEFAULT_SPEEDTEST_URL
     try:
         # 获取系统信息
         os_type, arch_type = get_system_info()
@@ -1627,7 +1645,7 @@ def run_speedtest_with_file(ip_file, dn_count, speed_limit, time_limit, thread_c
             "-dn", dn_count,
             "-sl", speed_limit,
             "-tl", time_limit,
-            "-url", DEFAULT_SPEEDTEST_URL,
+            "-url", speedtest_url,
             "-p", "20"  # 显示前20个结果
         ]
         
@@ -1653,8 +1671,10 @@ def run_speedtest_with_file(ip_file, dn_count, speed_limit, time_limit, thread_c
         return 1
 
 
-def run_speedtest(exec_name, cfcolo, dn_count, speed_limit, time_limit, thread_count="200"):
+def run_speedtest(exec_name, cfcolo, dn_count, speed_limit, time_limit, thread_count="200", speedtest_url=None):
     """运行 CloudflareSpeedTest"""
+    if speedtest_url is None:
+        speedtest_url = DEFAULT_SPEEDTEST_URL
     print(f"\n开始运行 CloudflareSpeedTest...")
     print(f"测试参数:")
     print(f"  - 机场码: {cfcolo} ({AIRPORT_CODES.get(cfcolo, {}).get('name', '未知')})")
@@ -1676,7 +1696,7 @@ def run_speedtest(exec_name, cfcolo, dn_count, speed_limit, time_limit, thread_c
         "-sl", speed_limit,
         "-tl", time_limit,
         "-f", CLOUDFLARE_IP_FILE,
-        "-url", DEFAULT_SPEEDTEST_URL
+        "-url", speedtest_url
     ])
     
     try:
@@ -1704,8 +1724,14 @@ def parse_args():
   # 指定测试参数
   python cloudflare_speedtest.py --mode beginner --count 20 --speed 2 --delay 500
   
-  # 常规测速模式（需要先运行地区检测）
+  # 常规测速模式（单地区）
   python cloudflare_speedtest.py --mode normal --region HKG --count 10
+  
+  # 常规测速模式（多地区同时测速）
+  python cloudflare_speedtest.py --mode normal --region HKG SIN NRT --count 10 --max-workers 3
+  
+  # 自定义测速地址
+  python cloudflare_speedtest.py --mode beginner --speedtest-url https://speed.cloudflare.com/__down?bytes=99999999
   
   # 优选反代模式
   python cloudflare_speedtest.py --mode proxy --csv result.csv
@@ -1719,8 +1745,8 @@ def parse_args():
   # 上传结果到API（不清空，IP会累积）
   python cloudflare_speedtest.py --mode beginner --upload api --worker-domain example.com --uuid abc123
   
-  # 上传结果到GitHub
-  python cloudflare_speedtest.py --mode beginner --upload github --repo owner/repo --token ghp_xxx
+  # 上传结果到GitHub（多地区分别上传）
+  python cloudflare_speedtest.py --mode normal --region HKG SIN --upload github --repo owner/repo --token ghp_xxx --file-path "{region}_ips.txt"
         """
     )
     
@@ -1743,12 +1769,20 @@ def parse_args():
                        help='延迟测速线程数；越多延迟测速越快，性能弱的设备(如路由器)请勿太高（默认: 200, 最多: 1000）')
     
     # 常规测速模式参数
-    parser.add_argument('--region', type=str,
-                       help='地区码（常规测速模式需要，例如: HKG, SIN）')
+    parser.add_argument('--region', type=str, action='append', nargs='+',
+                       help='地区码（常规测速模式需要，支持多个，例如: --region HKG SIN）')
     
     # 优选反代模式参数
     parser.add_argument('--csv', type=str, default='result.csv',
                        help='CSV文件路径（优选反代模式，默认: result.csv）')
+    
+    # 测速URL
+    parser.add_argument('--speedtest-url', '-u', type=str, default=DEFAULT_SPEEDTEST_URL,
+                       help=f'自定义测速地址（默认: {DEFAULT_SPEEDTEST_URL}）')
+    
+    # 并发控制
+    parser.add_argument('--max-workers', type=int, default=3,
+                       help='多地区测速时的最大并发数（默认: 3）')
     
     # 上传参数
     parser.add_argument('--upload', choices=['api', 'github', 'none'], default='none',
@@ -1845,7 +1879,7 @@ def run_with_args(args):
             "-dn", str(args.count),
             "-sl", str(args.speed),
             "-tl", str(args.delay),
-            "-url", DEFAULT_SPEEDTEST_URL,
+            "-url", args.speedtest_url,
             "-o", "result.csv"
         ])
         
@@ -1877,93 +1911,82 @@ def run_with_args(args):
     elif args.mode == 'normal':
         # 常规测速模式
         if not args.region:
-            print("❌ 常规测速模式需要提供 --region 参数（例如: --region HKG）")
+            print("❌ 常规测速模式需要提供 --region 参数（例如: --region HKG SIN）")
             return 1
         
+        # 处理逗号分隔和空格分隔的地区码（flatten argparse 的嵌套列表）
+        regions = []
+        for group in args.region:
+            for r in group:
+                regions.extend([x.strip() for x in r.split(',') if x.strip()])
+        
         print(f"\n[常规测速模式]")
-        print(f"  地区码: {args.region}")
+        print(f"  地区码: {', '.join(regions)}")
         print(f"  测试IP数量: {args.count}")
         print(f"  速度下限: {args.speed} MB/s")
         print(f"  延迟上限: {args.delay} ms")
         print(f"  延迟测速线程数: {args.thread}")
+        print(f"  测速地址: {args.speedtest_url}")
+        print(f"  最大并发数: {args.max_workers}")
         
         # 验证线程数
         if args.thread < 1 or args.thread > 1000:
             print(f"❌ 线程数必须在 1-1000 之间，当前值: {args.thread}")
             return 1
         
-        # 检查是否有地区扫描结果
+        # 检查/生成地区扫描结果
         if not os.path.exists("region_scan.csv"):
-            print("⚠️  未找到地区扫描结果文件，建议先运行交互式模式进行地区检测")
-            print("   或者使用小白快速测试模式")
-            return 1
+            print("\n⚠️  未找到地区扫描结果文件，正在自动检测...")
+            detect_available_regions(args.speedtest_url)
+            if not os.path.exists("region_scan.csv"):
+                print("❌ 地区扫描失败")
+                return 1
         
-        # 从地区扫描结果中提取该地区的IP
-        region_ips = []
+        # 读取所有地区IP
+        region_ip_map = {}
         with open("region_scan.csv", 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 colo = (row.get('地区码') or '').strip()
-                if colo == args.region:
-                    ip = (row.get('IP 地址') or '').strip()
-                    if ip:
-                        region_ips.append(ip)
+                ip = (row.get('IP 地址') or '').strip()
+                if colo and ip and colo in regions:
+                    region_ip_map.setdefault(colo, []).append(ip)
         
-        if not region_ips:
-            print(f"❌ 未找到 {args.region} 地区的IP")
+        tasks = []
+        for region in regions:
+            ips = region_ip_map.get(region, [])
+            if not ips:
+                print(f"❌ 未找到 {region} 地区的IP")
+                continue
+            tasks.append((region, ips))
+        
+        if not tasks:
+            print("❌ 没有可用的地区进行测速")
             return 1
         
-        # 创建该地区的IP文件
-        region_ip_file = f"{args.region.lower()}_ips.txt"
-        with open(region_ip_file, 'w', encoding='utf-8') as f:
-            for ip in region_ips:
-                f.write(f"{ip}\n")
+        # 并行测速
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        print(f"找到 {len(region_ips)} 个 {args.region} 地区的IP，开始测速...")
+        results = {}
+        with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+            future_to_region = {
+                executor.submit(run_speedtest_for_region, region, ips, args, exec_name): region
+                for region, ips in tasks
+            }
+            for future in as_completed(future_to_region):
+                region = future_to_region[future]
+                try:
+                    result_csv = future.result()
+                    if result_csv:
+                        results[region] = result_csv
+                except Exception as e:
+                    print(f"[{region}] 测速过程中出错: {e}")
         
-        # 构建测速命令
-        if sys.platform == "win32":
-            cmd = [exec_name]
+        if results:
+            print(f"\n✅ 共完成 {len(results)}/{len(tasks)} 个地区的测速")
+            upload_regions_results(results, args)
         else:
-            cmd = [f"./{exec_name}"]
-        
-        cmd.extend([
-            "-f", region_ip_file,
-            "-n", str(args.thread),
-            "-dn", str(args.count),
-            "-sl", str(args.speed),
-            "-tl", str(args.delay),
-            "-url", DEFAULT_SPEEDTEST_URL,
-            "-o", "result.csv"
-        ])
-        
-        print(f"\n运行命令: {' '.join(cmd)}")
-        print("=" * 50)
-        
-        result = subprocess.run(cmd, encoding='utf-8', errors='replace')
-        
-        # 清理临时文件
-        if os.path.exists(region_ip_file):
-            os.remove(region_ip_file)
-        
-        if result.returncode == 0:
-            print("\n✅ 测速完成！结果已保存到 result.csv")
-            
-            # 处理上传
-            if args.upload == 'api':
-                if not args.worker_domain or not args.uuid:
-                    print("❌ API上传需要提供 --worker-domain 和 --uuid 参数")
-                else:
-                    # 调用命令行模式的上传函数
-                    upload_to_cloudflare_api_cli("result.csv", args.worker_domain, args.uuid, args.upload_count, clear_existing=args.clear)
-            elif args.upload == 'github':
-                if not args.repo or not args.token:
-                    print("❌ GitHub上传需要提供 --repo 和 --token 参数")
-                else:
-                    # 调用命令行模式的上传函数
-                    upload_to_github_cli("result.csv", args.repo, args.token, args.file_path, args.upload_count)
-        else:
-            print("\n❌ 测速失败")
+            print("\n❌ 所有地区测速均失败")
             return 1
             
     elif args.mode == 'proxy':
@@ -1990,7 +2013,100 @@ def run_with_args(args):
     return 0
 
 
-def generate_cli_command(mode, ip_version, cfcolo=None, dn_count=None, speed_limit=None, time_limit=None, upload_info=None, thread_count="200"):
+def run_speedtest_for_region(region, region_ips, args, exec_name):
+    """为单个地区运行测速"""
+    region_ip_file = f"{region.lower()}_ips.txt"
+    result_csv = f"result_{region}.csv"
+    
+    with open(region_ip_file, 'w', encoding='utf-8') as f:
+        for ip in region_ips:
+            f.write(f"{ip}\n")
+    
+    if sys.platform == "win32":
+        cmd = [exec_name]
+    else:
+        cmd = [f"./{exec_name}"]
+    
+    cmd.extend([
+        "-f", region_ip_file,
+        "-n", str(args.thread),
+        "-dn", str(args.count),
+        "-sl", str(args.speed),
+        "-tl", str(args.delay),
+        "-url", args.speedtest_url,
+        "-o", result_csv
+    ])
+    
+    print(f"\n[{region}] 运行命令: {' '.join(cmd)}")
+    result = subprocess.run(cmd, encoding='utf-8', errors='replace')
+    
+    if os.path.exists(region_ip_file):
+        os.remove(region_ip_file)
+    
+    if result.returncode == 0 and os.path.exists(result_csv) and os.path.getsize(result_csv) > 0:
+        print(f"\n[{region}] ✅ 测速完成！结果已保存到 {result_csv}")
+        return result_csv
+    elif result.returncode == 0:
+        print(f"\n[{region}] ⚠️ 测速完成，但没有IP满足条件（未生成结果文件）")
+        return None
+    else:
+        print(f"\n[{region}] ❌ 测速失败")
+        return None
+
+
+def merge_region_csvs(results):
+    """合并多个地区的CSV结果"""
+    merged_file = "result_merged.csv"
+    all_rows = []
+    fieldnames = None
+    
+    for region, csv_file in results.items():
+        if not os.path.exists(csv_file):
+            continue
+        with open(csv_file, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            if not fieldnames and reader.fieldnames:
+                fieldnames = reader.fieldnames
+            for row in reader:
+                all_rows.append(row)
+    
+    if not fieldnames or not all_rows:
+        return None
+    
+    with open(merged_file, 'w', encoding='utf-8', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(all_rows)
+    
+    return merged_file
+
+
+def upload_regions_results(results, args):
+    """上传多个地区的结果"""
+    if not results or args.upload == 'none':
+        return
+    
+    if args.upload == 'api':
+        merged_csv = merge_region_csvs(results)
+        if merged_csv and args.worker_domain and args.uuid:
+            upload_to_cloudflare_api_cli(merged_csv, args.worker_domain, args.uuid, args.upload_count, clear_existing=args.clear)
+        if merged_csv and os.path.exists(merged_csv):
+            os.remove(merged_csv)
+    elif args.upload == 'github':
+        for region, result_csv in results.items():
+            file_path = args.file_path
+            if '{region}' in file_path:
+                file_path = file_path.replace('{region}', region.lower())
+            else:
+                dir_name = os.path.dirname(file_path)
+                base = os.path.basename(file_path)
+                file_path = os.path.join(dir_name, f"{region.lower()}_{base}")
+            if args.repo and args.token:
+                print(f"\n[{region}] 开始上传到 GitHub: {file_path}")
+                upload_to_github_cli(result_csv, args.repo, args.token, file_path, args.upload_count)
+
+
+def generate_cli_command(mode, ip_version, cfcolo=None, dn_count=None, speed_limit=None, time_limit=None, upload_info=None, thread_count="200", speedtest_url=None, max_workers=None):
     """生成对应的命令行命令
     
     Args:
@@ -2040,10 +2156,18 @@ def generate_cli_command(mode, ip_version, cfcolo=None, dn_count=None, speed_lim
         cmd_parts.append(f"--delay {time_limit}")
     if thread_count:
         cmd_parts.append(f"--thread {thread_count}")
+    if speedtest_url and speedtest_url != DEFAULT_SPEEDTEST_URL:
+        cmd_parts.append(f"--speedtest-url {speedtest_url}")
+    if max_workers and max_workers != 3:
+        cmd_parts.append(f"--max-workers {max_workers}")
     
     # 添加地区码（常规模式）
     if mode == "normal" and cfcolo:
-        cmd_parts.append(f"--region {cfcolo}")
+        if isinstance(cfcolo, list):
+            for r in cfcolo:
+                cmd_parts.append(f"--region {r}")
+        else:
+            cmd_parts.append(f"--region {cfcolo}")
     
     # 添加上传配置
     if upload_info:
@@ -4144,8 +4268,11 @@ def upload_to_github_cli(result_file="result.csv", repo_info=None, github_token=
         traceback.print_exc()
 
 
-def detect_available_regions():
+def detect_available_regions(speedtest_url=None):
     """检测可用地区"""
+    if speedtest_url is None:
+        speedtest_url = DEFAULT_SPEEDTEST_URL
+    
     # 检查是否已有检测结果文件
     if os.path.exists("region_scan.csv"):
         print("发现已有的地区扫描结果文件")
@@ -4189,9 +4316,11 @@ def detect_available_regions():
     cmd.extend([
         "-dd",  # 禁用下载测速，只做延迟测试
         "-tl", "9999",  # 高延迟阈值
+        "-n", "1000",  # 最大线程数，确保扫描更全更快
+        "-t", "4",  # 延迟测速次数
         "-f", CLOUDFLARE_IP_FILE,
         "-httping",  # 使用HTTPing模式获取地区码
-        "-url", "https://jhb.ovh",
+        "-url", speedtest_url,
         "-o", "region_scan.csv"  # 输出到地区扫描文件
     ])
     
