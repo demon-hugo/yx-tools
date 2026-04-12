@@ -88,12 +88,80 @@ docker-compose run --rm cloudflare-speedtest \
   --speed 5 \
   --delay 500 \
   --upload github \
-  --github-token YOUR_TOKEN \
-  --github-repo owner/repo \
-  --github-path results/ips.txt
+  --repo owner/repo \
+  --token ghp_xxx \
+  --file-path results/ips.txt
 ```
 
-### 场景3：后台运行（定时任务）
+### 场景3：通过环境变量运行（推荐自动化部署）
+
+容器支持通过环境变量直接配置测速任务，无需手写长命令：
+
+```bash
+docker run -it --rm \
+  -e MODE=normal \
+  -e REGIONS="HKG SIN" \
+  -e COUNT=20 \
+  -e SPEED=5 \
+  -e DELAY=500 \
+  -e UPLOAD=github \
+  -e REPO=owner/repo \
+  -e TOKEN=ghp_xxx \
+  -e FILE_PATH="{region}_ips.txt" \
+  -e UPLOAD_COUNT=10 \
+  -v $(pwd)/data:/app/data \
+  cloudflare-speedtest:latest
+```
+
+或者使用 `docker-compose.yml` 配置：
+
+```yaml
+services:
+  cloudflare-speedtest:
+    build: .
+    environment:
+      - MODE=normal
+      - REGIONS=HKG SIN NRT
+      - COUNT=20
+      - SPEED=5
+      - DELAY=500
+      - SPEEDTEST_URL=https://speed.cloudflare.com/__down?bytes=99999999
+      - MAX_WORKERS=3
+      - UPLOAD=github
+      - REPO=owner/repo
+      - TOKEN=ghp_xxx
+      - FILE_PATH={region}_ips.txt
+      - UPLOAD_COUNT=10
+      - CLEAR=true
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+```
+
+**支持的环境变量清单**：
+
+| 环境变量 | 说明 | 示例 |
+|---------|------|------|
+| `MODE` | 测速模式：`beginner`/`normal`/`proxy` | `normal` |
+| `REGIONS` | 测速地区，多个用空格分隔 | `HKG SIN NRT` |
+| `SPEEDTEST_URL` | 自定义测速地址 | `https://speed.cloudflare.com/__down?bytes=99999999` |
+| `COUNT` | 测试IP数量 | `20` |
+| `SPEED` | 下载速度下限(MB/s) | `5` |
+| `DELAY` | 延迟上限(ms) | `500` |
+| `THREAD` | 延迟测速线程数 | `200` |
+| `MAX_WORKERS` | 多地区并发数 | `3` |
+| `UPLOAD` | 上传方式：`api`/`github`/`none` | `github` |
+| `WORKER_DOMAIN` | API上传的Worker域名 | `example.com` |
+| `UUID` | API上传的UUID | `abc123` |
+| `REPO` | GitHub仓库路径 | `owner/repo` |
+| `TOKEN` | GitHub Token | `ghp_xxx` |
+| `FILE_PATH` | GitHub文件路径（可用 `{region}` 占位符） | `{region}_ips.txt` |
+| `UPLOAD_COUNT` | 上传IP数量 | `10` |
+| `CLEAR` | 上传前清空现有IP：`true`/`false` | `true` |
+| `CRON_SCHEDULE` | 定时任务Cron表达式 | `0 2 * * *` |
+| `CRON_COMMAND` | 定时任务命令（可选，不设置则自动生成） | - |
+
+### 场景4：后台运行（定时任务）
 
 ```bash
 # 使用Docker的restart策略
@@ -109,7 +177,7 @@ docker run -d \
   --delay 1000
 ```
 
-### 场景4：结合Cron定时任务
+### 场景5：结合Cron定时任务
 
 在宿主机上设置Cron任务：
 
@@ -120,6 +188,31 @@ crontab -e
 # 添加定时任务（每天凌晨2点运行）
 0 2 * * * cd /path/to/project && docker-compose run --rm cloudflare-speedtest --mode beginner --count 10 --speed 1 --delay 1000
 ```
+
+### 场景6：Docker内定时任务（通过环境变量）
+
+```yaml
+services:
+  cloudflare-speedtest:
+    build: .
+    environment:
+      - CRON_SCHEDULE=0 2 * * *
+      - MODE=normal
+      - REGIONS=HKG SIN
+      - COUNT=20
+      - SPEED=1
+      - DELAY=1000
+      - UPLOAD=github
+      - REPO=owner/repo
+      - TOKEN=ghp_xxx
+      - FILE_PATH={region}_ips.txt
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    restart: unless-stopped
+```
+
+容器会自动生成定时任务命令，并在每天凌晨2点执行测速和上传。
 
 ## 环境变量
 
@@ -241,4 +334,3 @@ COPY cloudflare_speedtest.py .
 - [Docker官方文档](https://docs.docker.com/)
 - [Docker Compose文档](https://docs.docker.com/compose/)
 - [项目GitHub仓库](https://github.com/byJoey/yx-tools)
-

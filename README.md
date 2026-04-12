@@ -14,6 +14,8 @@
 ### 常规测速
 - **全球97个数据中心** - 支持完整的Cloudflare机场码映射
 - **智能测速** - 自动下载最新IP列表，支持自定义参数
+- **多地区并发** - 支持同时测试多个地区，结果分别保存和上传
+- **自定义测速地址** - 支持设置任意测速URL，适配不同网络环境
 - **结果分析** - 生成详细的CSV格式测速报告
 - **IPv4/IPv6支持** - 支持IPv4和IPv6地址测速
 
@@ -30,6 +32,7 @@
 ### 结果上报
 - **Cloudflare Workers API** - 支持上报到Cloudflare Workers API
 - **GitHub仓库上传** - 支持上传到GitHub公开仓库
+- **多地区分别上传** - 使用 `{region}` 占位符自动为每个地区生成独立文件
 - **批量上传** - 支持批量上传优选IP结果
 - **自动格式化** - 自动格式化IP列表（包含注释）
 
@@ -240,24 +243,60 @@ docker exec -it cloudflare-speedtest python3 /app/cloudflare_speedtest.py
 # 7. 即使容器重启，定时任务也会自动恢复
 ```
 
-**方法二：使用环境变量自动设置**
+**方法二：使用环境变量自动设置（推荐自动化）**
 
-在 `docker-compose.yml` 中配置：
+容器支持通过环境变量直接配置测速任务，无需手写完整命令。`docker-entrypoint.sh` 会自动根据环境变量组装命令：
+
+```yaml
+environment:
+  - MODE=normal
+  - REGIONS=HKG SIN NRT
+  - COUNT=20
+  - SPEED=5
+  - DELAY=500
+  - UPLOAD=github
+  - REPO=owner/repo
+  - TOKEN=ghp_xxx
+  - FILE_PATH={region}_ips.txt
+  - UPLOAD_COUNT=10
+```
+
+也可以配合定时任务一起使用：
 
 ```yaml
 environment:
   - CRON_SCHEDULE=0 2 * * *  # 每天凌晨2点
-  - CRON_COMMAND=python3 /app/cloudflare_speedtest.py --mode beginner --count 10 --speed 1 --delay 1000
+  - MODE=beginner
+  - COUNT=10
+  - SPEED=1
+  - DELAY=1000
 ```
 
-或使用Docker命令：
+使用Docker命令：
 
 ```bash
+# 直接执行测速（通过环境变量）
+docker run -it --rm \
+  -v $(pwd)/data:/app/data \
+  -e MODE=normal \
+  -e REGIONS="HKG SIN" \
+  -e COUNT=20 \
+  -e SPEED=5 \
+  -e UPLOAD=github \
+  -e REPO=owner/repo \
+  -e TOKEN=ghp_xxx \
+  -e FILE_PATH="{region}_ips.txt" \
+  ghcr.io/byjoey/yx-tools:latest
+
+# 后台定时任务（通过环境变量）
 docker run -d --name cloudflare-speedtest \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/config:/app/config \
   -e CRON_SCHEDULE="0 2 * * *" \
-  -e CRON_COMMAND="python3 /app/cloudflare_speedtest.py --mode beginner --count 10 --speed 1 --delay 1000" \
+  -e MODE=beginner \
+  -e COUNT=10 \
+  -e SPEED=1 \
+  -e DELAY=1000 \
   --restart unless-stopped \
   ghcr.io/byjoey/yx-tools:latest
 ```
@@ -501,6 +540,12 @@ python3 cloudflare_speedtest.py --mode normal --region NRT --count 15 --ipv6
 
 # 测试指定地区（洛杉矶），高质量测试
 python3 cloudflare_speedtest.py --mode normal --region LAX --count 50 --speed 10 --delay 200
+
+# 同时测试多个地区（并发测速）
+python3 cloudflare_speedtest.py --mode normal --region HKG SIN NRT --count 20 --max-workers 3
+
+# 使用自定义测速地址
+python3 cloudflare_speedtest.py --mode normal --region HKG --count 20 --speedtest-url https://your-cdn.com/__down?bytes=99999999
 ```
 
 **优选反代模式**
@@ -524,14 +569,16 @@ python3 cloudflare_speedtest.py --mode proxy --csv /path/to/result.csv
 | `--count` | 测试IP数量 | 10 | ❌ | `--count 20` |
 | `--speed` | 下载速度下限 (MB/s) | 1.0 | ❌ | `--speed 2` |
 | `--delay` | 延迟上限 (ms) | 1000 | ❌ | `--delay 500` |
-| `--region` | 地区码（常规测速模式需要） | - | ⚠️ | `--region HKG` |
+| `--region` | 地区码（常规测速模式需要，支持多个） | - | ⚠️ | `--region HKG SIN` |
 | `--csv` | CSV文件路径（优选反代模式） | result.csv | ❌ | `--csv result.csv` |
+| `--speedtest-url` | 自定义测速地址 | `https://speed.cloudflare.com/__down?bytes=99999999` | ❌ | `--speedtest-url https://xxx.com/test` |
+| `--max-workers` | 多地区测速最大并发数 | 3 | ❌ | `--max-workers 5` |
 | `--upload` | 上传方式 | none | ❌ | `api`/`github`/`none` |
 | `--worker-domain` | Worker域名（API上传需要） | - | ⚠️ | `--worker-domain example.com` |
 | `--uuid` | UUID或路径（API上传需要） | - | ⚠️ | `--uuid abc123` |
 | `--repo` | GitHub仓库路径（GitHub上传需要） | - | ⚠️ | `--repo owner/repo` |
 | `--token` | GitHub Token（GitHub上传需要） | - | ⚠️ | `--token ghp_xxx` |
-| `--file-path` | GitHub文件路径 | cloudflare_ips.txt | ❌ | `--file-path ips.txt` |
+| `--file-path` | GitHub文件路径（可用`{region}`占位符按地区分别上传） | cloudflare_ips.txt | ❌ | `--file-path '{region}_ips.txt'` |
 | `--upload-count` | 上传IP数量 | 10 | ❌ | `--upload-count 20` |
 | `--clear` | 上传前清空现有IP（避免IP累积，推荐使用） | false | ❌ | `--clear` |
 
@@ -561,19 +608,19 @@ python3 cloudflare_speedtest.py --mode beginner \
 
 **场景2：测试多个地区并上传到GitHub**
 ```bash
-# 测试香港地区
+# 同时测试香港和新加坡，结果分别上传到不同文件
 python3 cloudflare_speedtest.py --mode normal \
-  --region HKG --count 20 --speed 5 --delay 300 \
+  --region HKG SIN --count 20 --speed 5 --delay 300 \
   --upload github \
   --repo username/cloudflare-ips --token ghp_xxx \
-  --file-path hkg_ips.txt
+  --file-path '{region}_ips.txt'
 
-# 测试新加坡地区
+# 分别测试多个地区，使用固定文件名前缀
 python3 cloudflare_speedtest.py --mode normal \
-  --region SIN --count 20 --speed 5 --delay 300 \
+  --region HKG SIN NRT --count 20 --speed 5 --delay 300 \
   --upload github \
   --repo username/cloudflare-ips --token ghp_xxx \
-  --file-path sin_ips.txt
+  --file-path 'cf_{region}.txt'
 ```
 
 **场景3：快速测试IPv6**
@@ -747,19 +794,12 @@ python cloudflare_speedtest.py --mode beginner --count 20 --speed 2 --delay 500 
 #!/bin/bash
 # 自动测速脚本
 
-# 测试香港地区
+# 同时测试多个地区，结果分别上传
 python3 cloudflare_speedtest.py --mode normal \
-  --region HKG --count 20 --speed 5 --delay 300 \
+  --region HKG SIN NRT --count 20 --speed 5 --delay 300 \
   --upload github \
   --repo username/cloudflare-ips --token ghp_xxx \
-  --file-path hkg_ips.txt
-
-# 测试新加坡地区
-python3 cloudflare_speedtest.py --mode normal \
-  --region SIN --count 20 --speed 5 --delay 300 \
-  --upload github \
-  --repo username/cloudflare-ips --token ghp_xxx \
-  --file-path sin_ips.txt
+  --file-path '{region}_ips.txt'
 ```
 
 ### 交互式模式详细说明
