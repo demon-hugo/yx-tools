@@ -1,13 +1,13 @@
 # Cloudflare SpeedTest 跨平台自动化工具
 
-[![Version](https://img.shields.io/badge/Version-2.2.3-blue.svg)](https://github.com/byJoey/yx-tools)
+[![Version](https://img.shields.io/badge/Version-2.2.4-blue.svg)](https://github.com/byJoey/yx-tools)
 [![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-一个功能强大的跨平台Cloudflare测速工具，支持全球97个数据中心机场码映射，提供常规测速和优选反代功能。
+一个功能强大的跨平台Cloudflare测速工具，支持全球97个数据中心机场码映射，提供常规测速、多地区并发测速、自定义测速地址和优选反代功能。
 
-**当前版本：v2.2.3**
+**当前版本：v2.2.4**
 
 ## 主要功能
 
@@ -806,7 +806,7 @@ python3 cloudflare_speedtest.py --mode normal \
 
 #### 1. 小白快速测试模式
 
-专为新手设计，只需要输入3个简单的数字：
+专为新手设计，只需简单输入几个参数即可开始：
 ```
 📊 第一步：设置测试IP数量
 请输入要测试的IP数量 [默认: 10]: 20
@@ -816,14 +816,21 @@ python3 cloudflare_speedtest.py --mode normal \
 
 🚀 第三步：设置下载速度下限
 请输入下载速度下限(MB/s) [默认: 1]: 2
+
+⚡ 第四步：设置延迟测速线程数
+请输入延迟测速线程数 [默认: 200]: 200
+
+🔗 第五步：自定义测速地址（可选）
+是否自定义测速地址？[默认直接回车跳过]
 ```
 
 #### 2. 常规测速模式
 
-**机场码选择**
-- 输入机场码：`HKG` (香港)
-- 输入城市名：`香港` 或 `Hong Kong`
-- 查看完整列表：输入 `LIST`
+**地区选择流程**
+1. 程序自动扫描所有 Cloudflare IP，获取可用地区列表
+2. 显示带编号的可用地区（如 `1. HKG - 香港 (可用32个IP)`）
+3. 输入地区编号选择，**支持多选**（多个编号用逗号分隔，如 `1,3,5`）
+4. 多选时会**同时并发测速**，每个地区生成独立的 `result_{地区}.csv`
 
 **自定义参数**
 ```
@@ -832,6 +839,11 @@ python3 cloudflare_speedtest.py --mode normal \
 请输入下载速度下限 (MB/s) [默认: 1]: 5
 请输入延迟上限 (ms) [默认: 1000]: 500
 ```
+
+**自定义测速地址**
+- 常规测速开始前会提示输入自定义测速地址
+- 直接回车使用默认地址：`https://speed.cloudflare.com/__down?bytes=99999999`
+- 也可以输入自己的测速 URL，适配不同网络环境
 
 #### 3. 优选反代模式
 
@@ -853,6 +865,7 @@ CSV文件格式要求：
 **Cloudflare Workers API 上报**
 - 需要提供 Worker 域名和 UUID或者路径
 - 支持批量上传
+- **多地区测速时**：会自动合并所有地区的 `result_{地区}.csv`，然后**一次性批量上传**
 - 自动格式化IP列表（包含注释）
 
 **GitHub 仓库上传**
@@ -860,15 +873,24 @@ CSV文件格式要求：
 - 支持上传到公开仓库
 - 文件格式：`IP:端口#地区名-速度MB/s`
 - 使用换行符分隔，不使用逗号
+- **多地区分别上传**：支持 `{region}` 占位符，例如 `{region}_ips.txt` 会自动生成 `hkg_ips.txt`、`sin_ips.txt` 等
+- 交互模式下选择 GitHub 上传时，会提示输入文件路径并支持使用 `{region}` 占位符
 
 ## 输出文件
 
-### 测速结果 (result.csv)
+### 测速结果
+
+**单地区 / 小白快速测试**：`result.csv`
 ```csv
 IP 地址,端口,延迟,下载速度 (MB/s),上传速度 (MB/s)
 1.2.3.4,443,10.5,150.2,120.8
 5.6.7.8,80,15.2,200.1,180.5
 ```
+
+**多地区常规测速**：每个地区独立保存
+- `result_HKG.csv` - 香港地区结果
+- `result_SIN.csv` - 新加坡地区结果
+- `result_LAX.csv` - 洛杉矶地区结果
 
 ### 反代列表 (ips_ports.txt)
 ```
@@ -886,6 +908,7 @@ IP 地址,端口,延迟,下载速度 (MB/s),上传速度 (MB/s)
 - 使用换行符分隔，每行一个IP
 - 包含注释信息（#后面的内容）
 - 格式：`IP:端口#地区名-速度MB/s`（井号前后无空格）
+- 多地区上传时支持 `{region}` 占位符自动生成文件名，如 `{region}_ips.txt`
 
 ## 支持的机场码
 
@@ -917,29 +940,42 @@ IP 地址,端口,延迟,下载速度 (MB/s),上传速度 (MB/s)
 
 ## 高级配置
 
-### 环境变量
-```bash
-# 设置默认机场码
-export DEFAULT_AIRPORT=HKG
+### 保存的上传配置
 
-# 设置默认IP数量
-export DEFAULT_IP_COUNT=20
+脚本会自动将 API / GitHub 上传配置保存到 `.cloudflare_speedtest_config.json`，避免每次重复输入：
 
-# 设置默认速度阈值
-export DEFAULT_SPEED_LIMIT=50
-```
-
-### 配置文件
-创建 `config.json` 文件：
 ```json
 {
-  "default_airport": "HKG",
-  "default_ip_count": 20,
-  "default_speed_limit": 50,
-  "default_delay_limit": 200,
-  "default_time_limit": 10
+  "worker_domain": "example.com",
+  "uuid": "abc123",
+  "repo_info": "owner/repo",
+  "github_token": "ghp_xxx",
+  "file_path": "cloudflare_ips.txt"
 }
 ```
+
+### Docker 环境变量
+
+在 Docker 中运行时，支持通过环境变量完整配置测速任务，无需手写命令：
+
+```yaml
+environment:
+  - MODE=normal
+  - REGIONS=HKG SIN NRT
+  - COUNT=20
+  - SPEED=5
+  - DELAY=500
+  - SPEEDTEST_URL=https://speed.cloudflare.com/__down?bytes=99999999
+  - MAX_WORKERS=3
+  - UPLOAD=github
+  - REPO=owner/repo
+  - TOKEN=ghp_xxx
+  - FILE_PATH={region}_ips.txt
+  - UPLOAD_COUNT=10
+  - CLEAR=true
+```
+
+详见 [DOCKER.md](./DOCKER.md) 获取完整环境变量说明。
 
 ## 开发说明
 
@@ -976,7 +1012,28 @@ cloudflare-speedtest/
 
 ## 更新日志
 
-### v2.2.3 (最新)
+### v2.2.4 (最新)
+- ✨ 新增多地区并发测速
+  - 支持同时测试多个地区，自动并发执行
+  - 各地区生成独立的 `result_{地区}.csv` 结果文件
+  - 支持通过 `--max-workers` 控制并发数
+- ✨ 新增自定义测速地址
+  - 支持通过 `--speedtest-url` / `-u` 参数指定任意测速 URL
+  - 交互模式下也支持输入自定义测速地址
+- ✨ 新增多地区分别上传
+  - GitHub 上传支持 `{region}` 占位符，自动生成按地区命名的文件
+  - API 上传时自动合并多地区结果后一次性批量上报
+- ✨ 增强 Docker 环境变量支持
+  - 容器支持通过完整环境变量配置测速任务
+  - `docker-entrypoint.sh` 自动根据环境变量组装命令
+  - 支持 `CRON_SCHEDULE` + 环境变量自动生成定时任务
+- 🔧 改进地区扫描逻辑
+  - 增加线程数和测速次数，确保扫描更全更快
+- 🔧 改进交互式多地区上传体验
+  - 新增统一的多地区结果上报界面
+  - API 模式自动合并，GitHub 模式支持 `{region}` 占位符输入
+
+### v2.2.3
 - ✨ 新增Docker支持
   - 提供官方Docker镜像，开箱即用
   - 支持Docker Compose一键部署

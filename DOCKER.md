@@ -90,7 +90,7 @@ docker-compose run --rm cloudflare-speedtest \
   --upload github \
   --repo owner/repo \
   --token ghp_xxx \
-  --file-path results/ips.txt
+  --file-path '{region}_ips.txt'
 ```
 
 ### 场景3：通过环境变量运行（推荐自动化部署）
