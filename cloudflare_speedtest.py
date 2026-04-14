@@ -901,7 +901,7 @@ def get_user_input(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
     print(" 功能选择")
     print("=" * 60)
     print("  1. 小白快速测试 - 简单输入，适合新手")
-    print("  2. 常规测速 - 测试指定机场码的IP速度")
+    print("  2. 常规测速 - 测试指定机场码的IP速度（支持多地区同时测速）")
     print("  3. 优选反代 - 从CSV文件生成反代IP列表")
     print("=" * 60)
     
@@ -1516,10 +1516,8 @@ def handle_normal_mode(ip_file=CLOUDFLARE_IP_FILE, ip_version="ipv4"):
             if results:
                 print(f"\n✅ 共完成 {len(results)}/{len(region_tasks)} 个地区的测速")
                 
-                # 逐个地区询问是否上报（简化处理）
-                for region, result_csv in results.items():
-                    if os.path.exists(result_csv):
-                        upload_results_to_api(result_csv)
+                # 多地区结果上报
+                upload_multi_region_results(results)
                 
                 # 输出对应的命令行命令
                 print("\n" + "=" * 80)
@@ -2244,7 +2242,8 @@ def main():
     print("=" * 80)
     print(" 支持 Windows / Linux / macOS (Darwin)")
     print(f" 内置 {len(AIRPORT_CODES)} 个全球数据中心机场码")
-    print(" 支持单个/多机场码/地区优选测速")
+    print(" 支持单地区/多地区并发优选测速")
+    print(" 支持自定义测速地址")
     print(" 支持优选反代IP列表生成")
     print("=" * 80)
     
@@ -2839,6 +2838,62 @@ def clear_config():
         return False
 
 
+def upload_multi_region_results(results):
+    """交互模式：上报多地区测速结果
+    
+    Args:
+        results: dict, {region: result_csv_path}
+    """
+    if not results:
+        return
+    
+    print("\n" + "=" * 70)
+    print(" 多地区优选结果上报")
+    print("=" * 70)
+    print(f" 检测到 {len(results)} 个地区已完成测速:")
+    for region, csv_file in results.items():
+        print(f"  - {region}: {csv_file}")
+    print("=" * 70)
+    
+    # 询问是否上报
+    choice = input("\n是否要上报优选结果？[y/N]: ").strip().lower()
+    if choice not in ['y', 'yes']:
+        print("跳过上报")
+        return
+    
+    # 选择上传方式
+    print("\n" + "=" * 70)
+    print(" 请选择上传方式")
+    print("=" * 70)
+    print("  1. Cloudflare Workers API (合并所有地区后一次性上传)")
+    print("  2. GitHub (每个地区分别上传为独立文件)")
+    print("=" * 70)
+    
+    while True:
+        upload_method = input("\n请选择上传方式 [1/2]: ").strip()
+        if upload_method == "1":
+            merged_csv = merge_region_csvs(results)
+            if merged_csv:
+                upload_to_cloudflare_api(merged_csv)
+                if os.path.exists(merged_csv):
+                    os.remove(merged_csv)
+            break
+        elif upload_method == "2":
+            print("\n提示: 可以使用 {region} 占位符生成按地区命名的文件")
+            print("例如: {region}_ips.txt 会生成 hkg_ips.txt, sin_ips.txt 等")
+            file_path = input("\n请输入 GitHub 文件路径 [默认: {region}_ips.txt]: ").strip()
+            if not file_path:
+                file_path = "{region}_ips.txt"
+            
+            for region, result_csv in results.items():
+                actual_path = file_path.replace("{region}", region.lower())
+                print(f"\n[{region}] 开始上传到 GitHub: {actual_path}")
+                upload_to_github(result_csv, file_path=actual_path)
+            break
+        else:
+            print("✗ 请输入 1 或 2")
+
+
 def upload_results_to_api(result_file="result.csv"):
     """上报优选结果到 Cloudflare Workers API 或 GitHub
     
@@ -3292,8 +3347,12 @@ def upload_to_cloudflare_api(result_file="result.csv"):
         return None
 
 
-def upload_to_github(result_file="result.csv"):
+def upload_to_github(result_file="result.csv", file_path=None):
     """上传优选结果到 GitHub 公开仓库
+    
+    Args:
+        result_file: 测速结果CSV文件路径
+        file_path: GitHub上的目标文件路径，默认使用保存的配置或 cloudflare_ips.txt
     
     Returns:
         dict: 上传配置信息，包含上传方式、相关参数等，如果未上传则返回None
@@ -3315,7 +3374,8 @@ def upload_to_github(result_file="result.csv"):
     saved_config = load_config()
     github_token = None
     repo_info = None
-    file_path = "cloudflare_ips.txt"
+    if file_path is None:
+        file_path = "cloudflare_ips.txt"
     
     if saved_config:
         saved_token = saved_config.get('github_token', '')
@@ -3339,7 +3399,8 @@ def upload_to_github(result_file="result.csv"):
                 if config_choice == "1":
                     github_token = saved_token
                     repo_info = saved_repo
-                    file_path = saved_file_path
+                    if file_path == "cloudflare_ips.txt":
+                        file_path = saved_file_path
                     print(f"\n✅ 使用保存的配置")
                     print(f"   仓库: {repo_info}")
                     print(f"   文件路径: {file_path}")
@@ -3390,10 +3451,13 @@ def upload_to_github(result_file="result.csv"):
             print("❌ 仓库格式不正确，应为 owner/repo")
             return None
         
-        # 获取文件路径
-        file_path_input = input("\n文件路径 [默认: cloudflare_ips.txt]: ").strip()
-        if file_path_input:
-            file_path = file_path_input
+        # 获取文件路径（如果调用时未指定）
+        if file_path == "cloudflare_ips.txt":
+            file_path_input = input("\n文件路径 [默认: cloudflare_ips.txt]: ").strip()
+            if file_path_input:
+                file_path = file_path_input
+        else:
+            print(f"\n文件路径: {file_path}")
         
         # 询问是否保存配置
         save_choice = input("\n是否保存此配置供下次使用？[Y/n]: ").strip().lower()
